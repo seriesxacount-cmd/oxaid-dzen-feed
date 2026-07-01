@@ -1,43 +1,110 @@
 # -*- coding: utf-8 -*-
 """Генератор Дзен-совместимого RSS для блога Оксайда (Tilda /tpost/).
-Берёт из Tilda-RSS список статей, тянет со страниц полный HTML статьи
-(<div itemprop="articleBody">) + обложку, собирает фид с content:encoded/guid/enclosure."""
-import re, time, sys, html, urllib.request, urllib.error
+Тянет полный текст статьи из <div itemprop="articleBody"> + рисует брендовую обложку
+(тёмно-синий фон + заголовок + молекула + логотип). Собирает фид с content:encoded/guid/enclosure.
+
+Обложки: если covers/gen/<slug>.png уже есть (закоммичен) — используется он;
+иначе рисуется на лету (для новых статей). Так текущие обложки = утверждённый вид."""
+import re, os, time, sys, html, urllib.request, urllib.error
 import xml.etree.ElementTree as ET
+from PIL import Image, ImageDraw, ImageFont
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ASSETS = os.path.join(HERE, "assets")
+FONT_DIR = os.path.join(ASSETS, "fonts")
+MOL_T = os.path.join(ASSETS, "molecule_transparent.png")
+MOL_W = os.path.join(ASSETS, "molecule_white.png")
 
 SRC_RSS = "https://oxaid.ru/rss-feed-259348515931.xml"
 OUT = sys.argv[1] if len(sys.argv) > 1 else "feed.xml"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 MIN_LEN = 300
+SITE = "https://seriesxacount-cmd.github.io/oxaid-dzen-feed"
 
-# запасные обложки по теме (когда у статьи нет своей og:image)
-COVER_BASE = "https://seriesxacount-cmd.github.io/oxaid-dzen-feed/covers/"
-COVER_RULES = [
-    (r'коагулянт|гипохлорит|перекис|водоочист|водоподгот|сульфат алюмин|дезинфекц', 'oblozhka_vodoochistka.jpg'),
-    (r'кислот', 'oblozhka_kisloty.jpg'),
-    (r'доставк|ж/д|логист|импорт|еаэс|казахстан', 'oblozhka_logistika.jpg'),
-    (r'хранени|склад|класс опасност|перевозк', 'oblozhka_sklad.jpg'),
-    (r'рынок сер|серы|порт|экспорт', 'oblozhka_port.jpg'),
-    (r'контрактн|производств|кризис каустик|каустическ|натр едк|сода каустич|гидроксид натр', 'oblozhka_zavod.jpg'),
-    (r'марк|гост|концентрац|плотност|характеристик', 'oblozhka_lab.jpg'),
-]
-DEFAULT_COVER = 'oblozhka_kompleks.jpg'
+# --- обложка ---
+W, H, PAD = 1536, 864, 96
+TOP, BOTTOM, ACCENT = (13, 32, 58), (22, 63, 110), (60, 175, 220)
 
-def pick_cover(title):
-    t = (title or "").lower()
-    for pat, fn in COVER_RULES:
-        if re.search(pat, t):
-            return COVER_BASE + fn
-    return COVER_BASE + DEFAULT_COVER
+def font(sz, bold=True):
+    fn = "PTSans-Bold.ttf" if bold else "PTSans-Regular.ttf"
+    cands = [os.path.join(FONT_DIR, fn)]
+    if bold:
+        cands += [r"C:\Windows\Fonts\segoeuib.ttf", r"C:\Windows\Fonts\arialbd.ttf",
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+    else:
+        cands += [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\arial.ttf",
+                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+    for p in cands:
+        if os.path.exists(p):
+            return ImageFont.truetype(p, sz)
+    return ImageFont.load_default()
 
+def _grad():
+    g = Image.new("RGB", (1, H))
+    for y in range(H):
+        t = y / H
+        g.putpixel((0, y), tuple(int(TOP[i]*(1-t)+BOTTOM[i]*t) for i in range(3)))
+    return g.resize((W, H)).convert("RGBA")
+
+def _wrap(d, text, fnt, maxw):
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        test = (cur+" "+w).strip()
+        if d.textlength(test, font=fnt) <= maxw:
+            cur = test
+        else:
+            if cur: lines.append(cur)
+            cur = w
+    if cur: lines.append(cur)
+    return lines
+
+def render_cover(title, out):
+    img = _grad()
+    src = MOL_T if os.path.exists(MOL_T) else MOL_W
+    if os.path.exists(src):
+        mol = Image.open(src).convert("RGBA")
+        s = 900; mol = mol.resize((s, int(mol.height*s/mol.width)))
+        mol.putalpha(mol.split()[3].point(lambda p: int(p*0.16)))
+        img.alpha_composite(mol, (W-620, H-560))
+    d = ImageDraw.Draw(img)
+    fsz = 82
+    while fsz > 44:
+        fnt = font(fsz); lines = _wrap(d, title, fnt, W-2*PAD)
+        if len(lines) <= 4: break
+        fsz -= 6
+    lh = int(fsz*1.22); y = (H-lh*len(lines))//2 - 50
+    d.rectangle((PAD, y-46, PAD+120, y-34), fill=ACCENT)
+    for ln in lines:
+        d.text((PAD, y), ln, font=fnt, fill=(255, 255, 255)); y += lh
+    mh = 104; ly = H-mh-66
+    if os.path.exists(MOL_W):
+        m = Image.open(MOL_W).convert("RGBA")
+        mw = int(m.width*mh/m.height); m = m.resize((mw, mh))
+        img.alpha_composite(m, (PAD, ly)); tx = PAD+mw+26
+    else:
+        tx = PAD
+    d.text((tx, ly+8), "ОКСАЙД", font=font(60), fill=(255, 255, 255))
+    d.text((tx+3, ly+70), "промышленная химия · СПб", font=font(28, bold=False), fill=(175, 205, 235))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    img.convert("RGB").save(out, "PNG")
+
+def cover_for(title, slug, outdir):
+    rel = f"covers/gen/{slug}.png"
+    dst = os.path.join(outdir, rel)
+    if not os.path.exists(dst):
+        render_cover(title, dst)
+        print(f"    (отрисована обложка {slug})", flush=True)
+    return f"{SITE}/{rel}"
+
+# --- парсинг статей ---
 def fetch(url, tries=4):
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "ru", "Referer": "https://oxaid.ru/"})
             return urllib.request.urlopen(req, timeout=45).read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
-            if e.code in (403, 429, 503) and i < tries - 1:
-                time.sleep(3 * (i + 1)); continue
+            if e.code in (403, 429, 503) and i < tries-1:
+                time.sleep(3*(i+1)); continue
             raise
 
 def article_html(h):
@@ -47,12 +114,11 @@ def article_html(h):
     for t in re.finditer(r'<(/?)div\b[^>]*>', h[start:], re.I):
         depth += 1 if t.group(1) == "" else -1
         if depth == 0:
-            return h[start:start + t.start()]
+            return h[start:start+t.start()]
     return None
 
 def clean(frag):
     frag = re.sub(r'<(script|style|svg|noscript)\b.*?</\1>', ' ', frag, flags=re.S | re.I)
-    # ленивые картинки Tilda: data-original -> src
     frag = re.sub(r'<img[^>]*?\bdata-original="([^"]+)"[^>]*?>', r'<img src="\1" />', frag, flags=re.I)
     def strip_attrs(mt):
         tag = mt.group(1); attrs = mt.group(2) or ""
@@ -68,13 +134,11 @@ def clean(frag):
     frag = re.sub(r'(\s*\n\s*)+', '\n', frag)
     return frag.strip()
 
-def og_image(h):
-    m = re.search(r'<meta property="og:image" content="([^"]+)"', h)
-    return m.group(1) if m else None
-
 def text_len(frag):
     return len(re.sub(r'<[^>]+>', '', frag or "").strip())
 
+# --- main ---
+outdir = os.path.dirname(os.path.abspath(OUT)) or "."
 rss = fetch(SRC_RSS)
 items = ET.fromstring(rss.encode()).find("channel").findall("item")
 print(f"Статей в Tilda-RSS: {len(items)}", flush=True)
@@ -85,6 +149,7 @@ for it in items:
     link = (it.findtext("link") or "").strip().replace("oxaid.tilda.ws", "oxaid.ru")
     pub = (it.findtext("pubDate") or "").strip()
     desc = (it.findtext("description") or "").strip()
+    slug = link.rstrip("/").split("/")[-1] or "post"
     try:
         h = fetch(link)
     except Exception as e:
@@ -94,10 +159,11 @@ for it in items:
     tl = text_len(ce)
     if tl < MIN_LEN:
         skipped.append((title, f"текст {tl}<{MIN_LEN}")); continue
+    img_url = cover_for(title, slug, outdir)
     out_items.append({"title": title, "link": link, "pub": pub, "desc": desc or title,
-                      "img": og_image(h) or pick_cover(title), "ce": ce, "tl": tl})
+                      "img": img_url, "ce": ce, "tl": tl})
     print(f"  ✓ {title[:48]} ({tl} симв)", flush=True)
-    time.sleep(1.2)
+    time.sleep(1.0)
 
 def esc(s): return html.escape(s or "", quote=True)
 parts = ['<?xml version="1.0" encoding="UTF-8"?>',
@@ -114,9 +180,7 @@ for a in out_items:
               f'<guid isPermaLink="true">{esc(a["link"])}</guid>']
     if a["pub"]: parts.append(f"<pubDate>{esc(a['pub'])}</pubDate>")
     parts.append(f"<description>{esc(a['desc'])}</description>")
-    if a["img"]:
-        mtype = "image/png" if a["img"].lower().endswith(".png") else "image/jpeg"
-        parts.append(f'<enclosure url="{esc(a["img"])}" type="{mtype}" />')
+    parts.append(f'<enclosure url="{esc(a["img"])}" type="image/png" />')
     ce_safe = a['ce'].replace("]]>", "]]]]><![CDATA[>")
     parts += [f"<content:encoded><![CDATA[{ce_safe}]]></content:encoded>", "</item>"]
 parts.append("</channel></rss>")
@@ -126,6 +190,6 @@ with open(OUT, "w", encoding="utf-8") as f:
 
 print(f"\n=== ИТОГ ===")
 print(f"В фид: {len(out_items)} | размер: {len(xml.encode())} байт | {OUT}")
-print(f"Пропущено (короткие/служебные): {len(skipped)}")
+print(f"Пропущено: {len(skipped)}")
 for t, why in skipped:
     print(f"   – {t[:45]} — {why}")

@@ -27,12 +27,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Зависимости (Pillow + шрифты для обложек)
+        run: |
+          python -m pip install --quiet pillow
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core || true
       - name: Собрать Дзен-фид
         run: |
           mkdir -p public
           python gen_dzen_feed.py public/feed.xml
           cp index.html public/index.html
-          echo "Готово:"; ls -la public
+          echo "Готово:"; ls -la public/covers/gen | head
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
