@@ -10,6 +10,26 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "feed.xml"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 MIN_LEN = 300
 
+# запасные обложки по теме (когда у статьи нет своей og:image)
+COVER_BASE = "https://seriesxacount-cmd.github.io/oxaid-dzen-feed/covers/"
+COVER_RULES = [
+    (r'коагулянт|гипохлорит|перекис|водоочист|водоподгот|сульфат алюмин|дезинфекц', 'oblozhka_vodoochistka.jpg'),
+    (r'кислот', 'oblozhka_kisloty.jpg'),
+    (r'доставк|ж/д|логист|импорт|еаэс|казахстан', 'oblozhka_logistika.jpg'),
+    (r'хранени|склад|класс опасност|перевозк', 'oblozhka_sklad.jpg'),
+    (r'рынок сер|серы|порт|экспорт', 'oblozhka_port.jpg'),
+    (r'контрактн|производств|кризис каустик|каустическ|натр едк|сода каустич|гидроксид натр', 'oblozhka_zavod.jpg'),
+    (r'марк|гост|концентрац|плотност|характеристик', 'oblozhka_lab.jpg'),
+]
+DEFAULT_COVER = 'oblozhka_kompleks.jpg'
+
+def pick_cover(title):
+    t = (title or "").lower()
+    for pat, fn in COVER_RULES:
+        if re.search(pat, t):
+            return COVER_BASE + fn
+    return COVER_BASE + DEFAULT_COVER
+
 def fetch(url, tries=4):
     for i in range(tries):
         try:
@@ -75,7 +95,7 @@ for it in items:
     if tl < MIN_LEN:
         skipped.append((title, f"текст {tl}<{MIN_LEN}")); continue
     out_items.append({"title": title, "link": link, "pub": pub, "desc": desc or title,
-                      "img": og_image(h), "ce": ce, "tl": tl})
+                      "img": og_image(h) or pick_cover(title), "ce": ce, "tl": tl})
     print(f"  ✓ {title[:48]} ({tl} симв)", flush=True)
     time.sleep(1.2)
 
@@ -94,7 +114,9 @@ for a in out_items:
               f'<guid isPermaLink="true">{esc(a["link"])}</guid>']
     if a["pub"]: parts.append(f"<pubDate>{esc(a['pub'])}</pubDate>")
     parts.append(f"<description>{esc(a['desc'])}</description>")
-    if a["img"]: parts.append(f'<enclosure url="{esc(a["img"])}" type="image/jpeg" />')
+    if a["img"]:
+        mtype = "image/png" if a["img"].lower().endswith(".png") else "image/jpeg"
+        parts.append(f'<enclosure url="{esc(a["img"])}" type="{mtype}" />')
     ce_safe = a['ce'].replace("]]>", "]]]]><![CDATA[>")
     parts += [f"<content:encoded><![CDATA[{ce_safe}]]></content:encoded>", "</item>"]
 parts.append("</channel></rss>")
