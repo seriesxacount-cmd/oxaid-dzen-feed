@@ -165,6 +165,29 @@ for it in items:
     print(f"  ✓ {title[:48]} ({tl} симв)", flush=True)
     time.sleep(1.0)
 
+# --- авто-сгенерированные статьи (фабрика) ---
+import json as _json
+GENDIR = os.path.join(HERE, "generated")
+gidx = os.path.join(GENDIR, "index.json")
+if os.path.exists(gidx):
+    gen = _json.load(open(gidx, encoding="utf-8"))
+    added = 0
+    for g in gen:
+        bpath = os.path.join(GENDIR, g["slug"] + ".html")
+        if not os.path.exists(bpath):
+            continue
+        body = open(bpath, encoding="utf-8").read()
+        desc = re.sub(r'<[^>]+>', ' ', body)
+        desc = re.sub(r'\s+', ' ', desc).strip()[:180]
+        out_items.append({"title": g["title"],
+                          "link": f"{SITE}/articles/{g['slug']}.html",
+                          "pub": g.get("date", ""),
+                          "desc": desc or g["title"],
+                          "img": f"{SITE}/{g['cover']}",
+                          "ce": body, "tl": len(desc)})
+        added += 1
+    print(f"Добавлено авто-статей из фабрики: {added}", flush=True)
+
 def esc(s): return html.escape(s or "", quote=True)
 parts = ['<?xml version="1.0" encoding="UTF-8"?>',
          '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
