@@ -137,6 +137,33 @@ def clean(frag):
 def text_len(frag):
     return len(re.sub(r'<[^>]+>', '', frag or "").strip())
 
+# --- ЧИСТКА РЕКЛАМЫ под требования Дзена (телефон, email, CTA, ссылки на сайт) ---
+_AD_MARK = re.compile(
+    r'(обращайтесь|свяжитесь|закаж(ите|ем)|звоните|позвоните|оставьте?\s+заявку|'
+    r'запрос\w*\s*цен|купить\s+у\s+нас|обратитесь\s+к\s+нам|заказать\s+у\s+нас|напишите\s+нам|'
+    r'наш\s+менеджер|рассчита(ем|ю)|отгруж|наш\s+склад|поставщик\s+оксайд|'
+    r'320[\s\-]?40[\s\-]?09|8[\s\-]?\(?812\)?|8[\s\-]?800|@oxaid\.ru|office@|@mail\.ru)', re.I)
+
+def strip_ads(frag):
+    if not frag:
+        return frag
+    # 1) снять ссылки на свой сайт (оставить текст)
+    frag = re.sub(r'<a\b[^>]*(?:oxaid\.ru|tilda\.ws)[^>]*>(.*?)</a>', r'\1', frag, flags=re.I | re.S)
+    # 2) удалить абзацы/пункты/подзаголовки с рекламными маркерами
+    for tag in ('p', 'li', 'h2', 'h3'):
+        frag = re.sub(rf'<{tag}\b[^>]*>.*?</{tag}>',
+                      lambda m: '' if _AD_MARK.search(m.group(0)) else m.group(0),
+                      frag, flags=re.I | re.S)
+    # 2.5) остаточные CTA-фразы вне <p> (bare / в <div>) — режем от маркера до тега
+    frag = re.sub(r'(?i)(оставьте?\s+заявку|обращайтесь|напишите\s+нам|'
+                  r'запрос\w*\s*цен|рассчита\w+\s+цен|заказать\s+у\s+нас)[^<>]*', '', frag)
+    # 3) добить оставшиеся телефон/почту в тексте
+    frag = re.sub(r'8[\s\-]?\(?812\)?[\s\-]?320[\s\-]?40[\s\-]?09', '', frag)
+    frag = re.sub(r'[a-zA-Z0-9._%+-]+@(?:oxaid\.ru|mail\.ru)', '', frag)
+    frag = re.sub(r'<ul>\s*</ul>', '', frag, flags=re.I)
+    frag = re.sub(r'[ \t]+', ' ', frag)
+    return frag.strip()
+
 # --- main ---
 outdir = os.path.dirname(os.path.abspath(OUT)) or "."
 rss = fetch(SRC_RSS)
@@ -155,7 +182,7 @@ for it in items:
     except Exception as e:
         skipped.append((title, f"загрузка: {e}")); continue
     raw = article_html(h)
-    ce = clean(raw) if raw else ""
+    ce = strip_ads(clean(raw)) if raw else ""
     tl = text_len(ce)
     if tl < MIN_LEN:
         skipped.append((title, f"текст {tl}<{MIN_LEN}")); continue
@@ -176,7 +203,7 @@ if os.path.exists(gidx):
         bpath = os.path.join(GENDIR, g["slug"] + ".html")
         if not os.path.exists(bpath):
             continue
-        body = open(bpath, encoding="utf-8").read()
+        body = strip_ads(open(bpath, encoding="utf-8").read())
         desc = re.sub(r'<[^>]+>', ' ', body)
         desc = re.sub(r'\s+', ' ', desc).strip()[:180]
         out_items.append({"title": g["title"],
